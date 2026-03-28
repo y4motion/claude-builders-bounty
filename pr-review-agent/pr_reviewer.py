@@ -17,6 +17,7 @@ import json
 import argparse
 import urllib.request
 import urllib.error
+import re
 
 def env_var(name):
     val = os.getenv(name)
@@ -46,15 +47,20 @@ def fetch_pr_diff(repo: str, pr_num: int) -> str:
 def evaluate_with_claude(diff: str, model: str) -> str:
     url = "https://api.anthropic.com/v1/messages"
     
-    prompt = f"""You are a deterministically strict Senior Code Review Agent.
-Analyze the following .patch / diff.
-Your goal is to mathematically deconstruct the code for:
-1. Architectural Anti-patterns (e.g., lazy type padding).
-2. Logical bugs or race conditions.
-3. Security edge-cases.
+    prompt = f"""You are a strict PR Review Agent. Analyze the following patch/diff.
+You MUST output precisely in this structured Markdown format and nothing else.
 
-If the PR is flawless, output "LGTM" and optionally praise the elegance.
-Otherwise, provide a highly structured Markdown response detailing exact file corrections.
+### Summary of changes
+(2-3 sentences summarizing the exact modifications)
+
+### Identified risks
+* (List critical logic, type, or security risks)
+* (If none, state "None detected")
+
+### Improvement suggestions
+* (List architectural or performance improvements)
+
+### Confidence score: (Low / Medium / High)
 
 DIFF:
 {diff}
@@ -106,14 +112,24 @@ def post_pr_comment(repo: str, pr_num: int, body: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Autonomous Claude PR Review Sub-Agent")
-    parser.add_argument("--repo", required=True, help="GitHub repository (e.g., 'owner/repo')")
-    parser.add_argument("--pr", required=True, type=int, help="Pull Request number")
+    parser.add_argument("--pr", required=True, help="GitHub Pull Request URL (e.g., https://github.com/owner/repo/pull/123)")
     parser.add_argument("--model", default=os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022"), help="Anthropic model to use (default: claude-3-5-sonnet-20241022)")
+    parser.add_argument("--dry-run", action="store_true", help="Print the review to stdout instead of posting it")
     
     args = parser.parse_args()
     
-    print(f"[*] Fetching Diff for {args.repo}#{args.pr}...")
-    diff = fetch_pr_diff(args.repo, args.pr)
+    # Parse the GitHub URL based on Acceptance Criteria
+    match = re.search(r"github\.com/([^/]+)/([^/]+)/pull/(\d+)", args.pr)
+    if not match:
+        print("[FATAL] Invalid PR URL format. Expected: https://github.com/owner/repo/pull/123")
+        sys.exit(1)
+        
+    owner, repo, pr_num_str = match.groups()
+    repo_full = f"{owner}/{repo}"
+    pr_num = int(pr_num_str)
+    
+    print(f"[*] Fetching Diff for {repo_full}#{pr_num}...")
+    diff = fetch_pr_diff(repo_full, pr_num)
     
     if not diff.strip():
         print("[*] PR is empty. Nothing to review.")
@@ -122,8 +138,11 @@ def main():
     print(f"[*] Dispatching diff to {args.model} for Evaluation...")
     review_text = evaluate_with_claude(diff, args.model)
     
-    print("[*] Writing analysis back to GitHub...")
-    post_pr_comment(args.repo, args.pr, review_text)
+    if args.dry_run:
+        print("\n" + "="*50 + "\n" + review_text + "\n" + "="*50 + "\n")
+    else:
+        print("[*] Writing analysis back to GitHub...")
+        post_pr_comment(repo_full, pr_num, review_text)
 
 if __name__ == "__main__":
     main()
