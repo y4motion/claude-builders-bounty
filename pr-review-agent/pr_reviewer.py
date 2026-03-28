@@ -43,7 +43,7 @@ def fetch_pr_diff(repo: str, pr_num: int) -> str:
         print(f"[FATAL] Failed to fetch PR diff: {e}")
         sys.exit(1)
 
-def evaluate_with_claude(diff: str) -> str:
+def evaluate_with_claude(diff: str, model: str) -> str:
     url = "https://api.anthropic.com/v1/messages"
     
     prompt = f"""You are a deterministically strict Senior Code Review Agent.
@@ -61,7 +61,7 @@ DIFF:
 """
 
     payload = {
-        "model": "claude-3-5-sonnet-20241022",
+        "model": model,
         "max_tokens": 2000,
         "temperature": 0.0,
         "system": "You are a pragmatic, zero-trust Code Review Sub-Agent. Speak clearly, concisely, and technically. No fluff.",
@@ -108,6 +108,7 @@ def main():
     parser = argparse.ArgumentParser(description="Autonomous Claude PR Review Sub-Agent")
     parser.add_argument("--repo", required=True, help="GitHub repository (e.g., 'owner/repo')")
     parser.add_argument("--pr", required=True, type=int, help="Pull Request number")
+    parser.add_argument("--model", default=os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022"), help="Anthropic model to use (default: claude-3-5-sonnet-20241022)")
     
     args = parser.parse_args()
     
@@ -118,8 +119,8 @@ def main():
         print("[*] PR is empty. Nothing to review.")
         sys.exit(0)
         
-    print("[*] Dispatching diff to Claude 3.5 Sonnet for Evaluation...")
-    review_text = evaluate_with_claude(diff)
+    print(f"[*] Dispatching diff to {args.model} for Evaluation...")
+    review_text = evaluate_with_claude(diff, args.model)
     
     print("[*] Writing analysis back to GitHub...")
     post_pr_comment(args.repo, args.pr, review_text)
