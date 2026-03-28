@@ -1,0 +1,284 @@
+{
+  "name": "Anthropic Issue #5: Weekly GitHub Claude Summary",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 17 * * 5"
+            }
+          ]
+        }
+      },
+      "id": "1",
+      "name": "Cron (Friday 5PM)",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "GITHUB_REPO",
+              "value": "anthropic/anthropic-sdk-python"
+            },
+            {
+              "name": "DISCORD_WEBHOOK_URL",
+              "value": "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN"
+            },
+            {
+              "name": "SUMMARY_LANGUAGE",
+              "value": "EN"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2",
+      "name": "Config Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        400,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const repo = $input.item.json.GITHUB_REPO;\nconst date = new Date();\ndate.setDate(date.getDate() - 7);\nconst since = date.toISOString();\n\nreturn {\n  repo: repo,\n  since: since,\n  language: $input.item.json.SUMMARY_LANGUAGE,\n  discord_url: $input.item.json.DISCORD_WEBHOOK_URL\n};"
+      },
+      "id": "3",
+      "name": "Calculate Date (T-7)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        600,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.github.com/repos/' + $json.repo + '/commits?since=' + $json.since }}",
+        "options": {
+          "headers": {
+            "User-Agent": "n8n-anthropic-bounty"
+          }
+        }
+      },
+      "id": "4",
+      "name": "Fetch Commits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        800,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.github.com/repos/' + $json.repo + '/pulls?state=closed&sort=updated&direction=desc' }}",
+        "options": {
+          "headers": {
+            "User-Agent": "n8n-anthropic-bounty"
+          }
+        }
+      },
+      "id": "5",
+      "name": "Fetch Merged PRs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        800,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.github.com/repos/' + $json.repo + '/issues?state=closed&sort=updated&direction=desc' }}",
+        "options": {
+          "headers": {
+            "User-Agent": "n8n-anthropic-bounty"
+          }
+        }
+      },
+      "id": "6",
+      "name": "Fetch Closed Issues",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        800,
+        450
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const language = $('Calculate Date (T-7)').item.json.language || 'EN';\nconst discordUrl = $('Calculate Date (T-7)').item.json.discord_url;\nconst repo = $('Calculate Date (T-7)').item.json.repo;\n\n// Safe extraction of arrays from HTTP nodes\nconst commits = $('Fetch Commits').first().json || [];\nconst prs = $('Fetch Merged PRs').first().json || [];\nconst issues = $('Fetch Closed Issues').first().json || [];\n\n// Filter PRs merged in the last 7 days\nconst sinceDate = new Date($('Calculate Date (T-7)').item.json.since);\nconst recentPrs = prs.filter(pr => pr.merged_at && new Date(pr.merged_at) > sinceDate);\nconst recentIssues = issues.filter(issue => issue.closed_at && new Date(issue.closed_at) > sinceDate && !issue.pull_request);\n\nconst contextStr = `\nREPOSITORY: ${repo}\n\nCOMMITS THIS WEEK:\n${commits.slice(0,20).map(c => '- ' + c.commit.message).join('\\n')}\n\nMERGED PRS THIS WEEK:\n${recentPrs.slice(0,10).map(pr => '- ' + pr.title).join('\\n')}\n\nCLOSED ISSUES THIS WEEK:\n${recentIssues.slice(0,10).map(i => '- ' + i.title).join('\\n')}\n`;\n\nreturn {\n  context: contextStr,\n  language: language,\n  discordUrl: discordUrl,\n  repo: repo\n};"
+      },
+      "id": "7",
+      "name": "Aggregate Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "claude-3-5-sonnet-20241022",
+        "prompt": "={{ 'You are an elite technical project manager. Write a narrative weekly summary of the following repository activity.\\nLanguage required: ' + $json.language + '\\n\\nACTIVITY DATA:\\n' + $json.context + '\\n\\nRules:\\n- Keep it engaging and narrative, not just a raw list.\\n- Output plain text or simple markdown suitable for Discord/Slack.\\n- Group by major themes if possible.' }}",
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "8",
+      "name": "Claude 3.5 Sonnet",
+      "type": "n8n-nodes-base.anthropic",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        300
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "anthropic-d1026",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.discordUrl }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content",
+              "value": "={{ '🚀 **Weekly Engineering Update: ' + $json.repo + '**\\n\\n' + $('Claude 3.5 Sonnet').item.json.text }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9",
+      "name": "Send to Discord",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1500,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Cron (Friday 5PM)": {
+      "main": [
+        [
+          {
+            "node": "Config Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config Variables": {
+      "main": [
+        [
+          {
+            "node": "Calculate Date (T-7)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Date (T-7)": {
+      "main": [
+        [
+          {
+            "node": "Fetch Commits",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Merged PRs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Closed Issues",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Commits": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Merged PRs": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Closed Issues": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Context": {
+      "main": [
+        [
+          {
+            "node": "Claude 3.5 Sonnet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude 3.5 Sonnet": {
+      "main": [
+        [
+          {
+            "node": "Send to Discord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
